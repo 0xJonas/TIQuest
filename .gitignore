@@ -1,0 +1,4 @@
+*.8xp
+*.exe
+
+res/*.inc
