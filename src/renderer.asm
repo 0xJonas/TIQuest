@@ -204,9 +204,16 @@ blit_graphic:
 #define next_row_diff temp_b2
 
 ; Part 1: Setup target addresses into the display buffer
-graphic_y .equ $ + 1                    ; hl = 12 * graphic_y
+graphic_y .equ $ + 1
     ld l, 0
-    ld h, 0
+    bit $01, l                          ; Initialize dither mask
+    ld a, %01010101
+    jr NZ, +_
+    cpl
+_:  ld (_dither_mask), a
+    cpl
+    ld (_dither_mask_inv), a
+    ld h, 0                             ; hl = 12 * graphic_y
     sla l
     sla l
     ld c, l
@@ -272,7 +279,15 @@ _blit_byte:
     cpl
 
     and (hl)                            ; Apply mask to current content of the display buffer
-    or c                                ; OR with second bitplane
+    ld (hl), a
+    ld a, (de)
+    cpl
+_dither_mask .equ $ + 1
+    and 0
+    ld (hl), a
+    ld a, (de)
+    or (hl)
+    and c
     ld (hl), a                          ; Write result back into the display buffer
     inc hl                              ; Increment offset
     ld (display_offset_1), hl
@@ -286,9 +301,15 @@ _blit_byte:
 
     and (hl)                            ; Apply mask to current content of the display buffer
     ld (hl), a
-    ld a, (de)                          ; OR the display buffer with the AND of the two bitplanes
-    and c
+    ld (hl), a
+    ld a, (de)
+    cpl
+_dither_mask_inv .equ $ + 1
+    and 0
+    ld (hl), a
+    ld a, (de)
     or (hl)
+    and c
     ld (hl), a
 
     inc hl
@@ -319,10 +340,15 @@ _:  ld (graphic_addr), hl
     add hl, bc
     ld (display_offset_2), hl
 
+    ld a, (_dither_mask)                ; Invert dither masks
+    ld (_dither_mask_inv), a
+    cpl
+    ld (_dither_mask), a
+
     ld a, (graphic_h_temp)              ; Decrement loop counter
     dec a
     ld (graphic_h_temp), a
-    jr NZ, _blit_row
+    jp NZ, _blit_row
 
     ret
 

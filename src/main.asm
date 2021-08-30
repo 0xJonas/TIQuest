@@ -33,7 +33,8 @@ setup:
 
     call clear_display
 main_loop:
-    ld hl, player_walk_front_1
+    ; ld hl, player_walk_front_1
+    ld hl, test_graphic
     ld (graphic_addr), hl
     ld a, 6
     ld (graphic_x), a
@@ -41,7 +42,8 @@ main_loop:
     ld (graphic_y), a
     ld a, 1
     ld (graphic_w), a
-    ld a, 12
+    ; ld a, 12
+    ld a, 8
     ld (graphic_h), a
     call blit_graphic
 
