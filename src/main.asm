@@ -3,10 +3,6 @@
     #include mirage.inc
 .list
 
-_display_mirror_1 .equ appBackUpScreen
-_display_mirror_2 .equ saveSScreen
-_ti_lcd_busy_quick .equ $000b
-
 appHeader:
     .org userMem - 2                    ; Everything after the Compiled AsmPrgm (2 bytes) token is loaded at the beginning of user memory.
     .db t2ByteTok, tasmCmp              ; Compiled AsmPrgm token, which defines the binary as an assembly program
@@ -37,7 +33,7 @@ setup:
 
     call clear_display
 main_loop:
-    ld hl, test_graphic
+    ld hl, player_walk_front_1
     ld (graphic_addr), hl
     ld a, 6
     ld (graphic_x), a
@@ -45,7 +41,7 @@ main_loop:
     ld (graphic_y), a
     ld a, 1
     ld (graphic_w), a
-    ld a, 8
+    ld a, 12
     ld (graphic_h), a
     call blit_graphic
 

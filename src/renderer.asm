@@ -1,3 +1,32 @@
+;--------------------------------------------------------
+;                        Renderer
+;--------------------------------------------------------
+; 
+; The renderer displays stuff on the screen.
+;
+; Sprite data uses the following format:
+;   Sprites are saved in rows. Each row consists of two bitplanes. The bits of each bitplane
+;   determine the color of the pixel:
+;   
+;   plane 1| plane 0 | color
+;         0| 0       | transparent
+;         0| 1       | white (off)
+;         1| 0       | gray (flickering)
+;         1| 1       | black (on)
+;
+;   When drawn using blit_graphic, sprites have a maximum width of 7 bytes (56 pixels).
+;
+; Provided labels:
+;   clear_display
+;   copy_buffer_to_screen
+;   blit_graphic
+
+
+_display_mirror_1 .equ appBackUpScreen
+_display_mirror_2 .equ saveSScreen
+_ti_lcd_busy_quick .equ $000b
+
+
 ; Delays execution until the display driver is ready to accept data
 ; Must be called before writing anything to the display driver
 _lcd_busy_quick:
@@ -7,6 +36,7 @@ _lcd_busy_quick:
     ret
 
 
+; Clears the display buffers by filling them with 0s.
 clear_display:
     ld hl, _display_mirror_1
     ld bc, 64 * 12 + 256 + 1            ; The screen is 64 * 12 bytes. However, because we branch when the registers are !0, we need to add 1 to b and c
@@ -29,9 +59,9 @@ _:  ld (hl), 0
     ret
 
 
-; Copies the current screen buffer to the lcd driver.
+; Copies display buffer contents to the lcd driver.
 ; 
-; This function the buffer contents to the lcd driver in columns. It starts with the
+; This function copies the display buffer contents to the lcd driver in columns. It starts with the
 ; rightmost column and continues to the left. This is done to minimize calls to _lcd_busy_quick
 ; because fewer addresses have to be written to the driver.
 ;
@@ -157,7 +187,15 @@ _copy_to_scratch_mem_and_shift:
 
     ret
 
-; hl = address of the graphic's stencil
+
+; Draws a sprite to the display buffers using blitting.
+; 
+; The following addresses must be populated before each call to blit_graphic:
+;   (graphic_x) x position of the sprite
+;   (graphic_y) y position of the sprite
+;   (graphic_w) width of the sprite in bytes
+;   (graphic_h) height of the sprite in bytes
+;   (graphic_addr) address of the sprite's graphic data
 blit_graphic:
 
 #define display_offset_1 temp_w1
@@ -205,7 +243,7 @@ _:  ex de, hl
     ld a, (graphic_h)                   ; Store graphic height into a temporary because we will overwrite it, but also need 
     ld (graphic_h_temp), a                     ; the original value later
 
-_mask_stencil:
+_blit_row:
     ld hl, (graphic_addr)
 
     ld a, (graphic_x)                   ; Load shift amount into b (graphic_x & 0b111)
@@ -223,7 +261,7 @@ _mask_stencil:
 
     ld de, _graphics_scratch_mem_b0
     ld ix, _graphics_scratch_mem_b1
-_negate_and_store:
+_blit_byte:
     ld c, (ix + 0)                      ; Save content of second bitplane
 
     ; First display buffer
@@ -258,7 +296,7 @@ _negate_and_store:
 
     inc ix
     inc de
-    djnz _negate_and_store
+    djnz _blit_byte
 
     ld hl, (graphic_addr)               ; Setup address for the next iteration (graphic_addr += 2 * graphic_w)
     ld a, (graphic_w)
@@ -284,7 +322,7 @@ _:  ld (graphic_addr), hl
     ld a, (graphic_h_temp)              ; Decrement loop counter
     dec a
     ld (graphic_h_temp), a
-    jr NZ, _mask_stencil
+    jr NZ, _blit_row
 
     ret
 

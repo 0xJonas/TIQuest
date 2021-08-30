@@ -9,3 +9,6 @@ graphics = $(addprefix ${resDir}/, \
 
 ${out} : ${srcDir}/*.asm ${graphics}
 	spasm64.exe -I ${srcDir} -I ${resDir} ${mainAsm} ${out}
+
+${resDir}/%.inc: ${resDir}/%.png ${resDir}/%.csv
+	python parse_graphic.py --image ${resDir}/$*.png --map ${resDir}/$*.csv --out ${resDir}/$*.inc
