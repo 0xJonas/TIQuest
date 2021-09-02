@@ -3,6 +3,39 @@
     #include mirage.inc
 .list
 
+; Miscelleaneous addresses in the tempSwapArea RAM
+arrow_keys    .equ tempSwapArea         ; (1 byte) Currently pressed arrow keys
+function_keys .equ tempSwapArea + 1     ; (1 byte) Currently pressed function keys
+action_keys   .equ tempSwapArea + 2     ; (1 byte) Currently pressed action keys (2nd, MODE, ALPHA)
+_graphics_scratch_mem_b0 .equ tempSwapArea + 3  ; (13 bytes) Scratch memory used by the renderer
+_graphics_scratch_mem_b1 .equ tempSwapArea + 16 ; (13 bytes) Scratch memory used by the renderer
+temp_b1       .equ tempSwapArea + 26    ; (1 byte) temporary
+temp_b2       .equ tempSwapArea + 27    ; (1 byte) temporary
+temp_b3       .equ tempSwapArea + 28    ; (1 byte) temporary
+temp_b4       .equ tempSwapArea + 29    ; (1 byte) temporary
+temp_w1       .equ tempSwapArea + 30    ; (2 bytes) temporary
+temp_w2       .equ tempSwapArea + 32    ; (2 bytes) temporary
+temp_w3       .equ tempSwapArea + 34    ; (2 bytes) temporary
+temp_w4       .equ tempSwapArea + 36    ; (2 bytes) temporary
+
+
+; Bits to detect the corresponding key presses
+key_down .equ 0
+key_left .equ 1
+key_right .equ 2
+key_up .equ 3
+
+key_f1 .equ 4
+key_f2 .equ 3
+key_f3 .equ 2
+key_f4 .equ 1
+key_f5 .equ 0
+
+key_2nd .equ 5
+key_mode .equ 6
+key_alpha .equ 7
+
+
 appHeader:
     .org userMem - 2                    ; Everything after the Compiled AsmPrgm (2 bytes) token is loaded at the beginning of user memory.
     .db t2ByteTok, tasmCmp              ; Compiled AsmPrgm token, which defines the binary as an assembly program
@@ -31,6 +64,7 @@ setup:
     res indicRun, (IY + indicFlags)     ; Disable the run indicator (random scrolling pixels in the top-right)
     set fullScrnDraw, (IY + apiFlg4)    ; Enable full screen
 
+    call setup_interrupts
     call clear_display
 main_loop:
     ; ld hl, player_walk_front_1
@@ -47,52 +81,90 @@ main_loop:
     ld (graphic_h), a
     call blit_graphic
 
+    call advance_dither_mask
+
     call wait_for_next_frame
     ld hl, _display_mirror_1
-    call copy_buffer_to_screen
+    call fastcopyb
 
     call wait_for_next_frame
     ld hl, _display_mirror_2
-    call copy_buffer_to_screen
+    call fastcopyb
 
-    bcall(_GetCSC)
-    cp skEnter
-    jr Z, exit
+    ld a, (action_keys)
+    bit key_mode, a
+    jr NZ, exit
     jr main_loop
 exit:
+    im 1                                ; Set interrupt mode back to 1
     ret
 
 
 ; Halts execution (enters low-power state) until the next frame should be drawn.
 wait_for_next_frame:
-    res indicOnly, (IY + indicFlags)    ; Make sure interrupts are enabled and key presses are recorded
     ei                                  ; The OS has some timer running which periodically generates an interrupt.
+_enter_halt:
     halt                                ; Enter low-power state
+
+    bit onInterrupt, (IY + onFlags)     ; Check if we woke up because the ON key was pressed
+    jr Z, _start_next_frame
+    res onInterrupt, (IY + onFlags)     ; Reset ON key interrupt flag
+    jr _enter_halt
+_start_next_frame:
+    ret
+
+
+_activate_keygroup_delay:
+    push af
+    pop af
+    ret
+
+
+scan_keyboard:
+    .echo $
+    ld a, $ff                           ; Reset keyboard for good luck
+    out (1), a
+
+    ld a, %11111110                     ; scan arrow keys.
+    out (1), a
+    call _activate_keygroup_delay
+    in a, (1)
+    cpl
+    ld (arrow_keys), a
+
+    ld a, %10111111                     ; scan function keys.
+    out (1), a
+    call _activate_keygroup_delay
+    in a, (1)
+    cpl
+    ld b, a
+    and %00011111                       ; Mask out function keys
+    ld (function_keys), a
+    ld a, b
+    and %01100000                       ; Mask out 2nd and MODE
+    ld b, a
+
+    ld a, %11011111                     ; scan action keys.
+    out (1), a
+    call _activate_keygroup_delay
+    in a, (1)
+    cpl
+    and %10000000                       ; Mask out ALPHA key
+    or b                                ; OR with action keys from the other keygroup
+    ld (action_keys), a
+
+    ret
+
+
+setup_interrupts:
+    ld hl, scan_keyboard                ; Add custom isr
+    ld (custintaddr), hl
+    ld a, %00101001
+    call setupint
     ret
 
 
 #include renderer.asm
-
-; -------------------------------------------------
-;                    Variables
-; -------------------------------------------------
-
-temp_b1:
-    .db 0
-temp_b2:
-    .db 0
-temp_b3:
-    .db 0
-temp_b4:
-    .db 0
-temp_w1:
-    .dw 0
-temp_w2:
-    .dw 0
-temp_w3:
-    .dw 0
-temp_w4:
-    .dw 0
 
 ; -------------------------------------------------
 ;                     Graphics

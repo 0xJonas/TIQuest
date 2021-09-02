@@ -14,16 +14,34 @@
 ;         1| 0       | gray (flickering)
 ;         1| 1       | black (on)
 ;
-;   When drawn using blit_graphic, sprites have a maximum width of 7 bytes (56 pixels).
+;   When drawn using blit_graphic, sprites have a maximum width of 12 bytes (96 pixels).
+;
+; The gray color is created using dithering: For this, each draw call (e.g. blit_graphic)
+; renderes into two buffers (_display_mirror_1 and _display_mirror_2). These buffers take turns in
+; being drawn to the screen. The buffers are drawn at a rate of ~100Hz (~120Hz for TI-83+).
+; When drawing a byte containing gray, the corresponding bits are ANDed
+; with a dither mask. This mask is updated using the following sequence:
+;
+;   _display_mirror_1 | _display_mirror_2
+;            00100100 | 01001001
+;            10010010 | 00100100
+;            01001001 | 10010010
+;            00100100 | 01001001
+;            10010010 | 00100100
+;                    ...
+;
+; It would probably be more intuitive to use a checkerboard pattern for dithering. However, due
+; to some quirks with timers/lcd, this does not create an even gray color, but instead a flickering
+; checkerboard pattern with some bits of gray in it.
 ;
 ; Provided labels:
 ;   clear_display
-;   copy_buffer_to_screen
+;   advance_dither_mask
 ;   blit_graphic
 
 
-_display_mirror_1 .equ appBackUpScreen
-_display_mirror_2 .equ saveSScreen
+_display_mirror_1 .equ plotSScreen
+_display_mirror_2 .equ appBackUpScreen
 _ti_lcd_busy_quick .equ $000b
 
 
@@ -56,67 +74,6 @@ _:  ld (hl), 0
     dec b
     jp NZ, -_
 
-    ret
-
-
-; Copies display buffer contents to the lcd driver.
-; 
-; This function copies the display buffer contents to the lcd driver in columns. It starts with the
-; rightmost column and continues to the left. This is done to minimize calls to _lcd_busy_quick
-; because fewer addresses have to be written to the driver.
-;
-;            <--c
-; b +------------+
-; | |        <--||
-; v |           ||
-;   |           v|
-;   +------------+
-;
-; Parameters:
-;   hl = address of the screen buffer
-copy_buffer_to_screen:
-    ld d, $20 + 11                      ; D: lcd driver command to set the column (20h == first 8-pixel column)
-    ld c, 12                            ; C: number of columns
-    di                                  ; Disable interrupts
-
-    ld a, $05                           ; Set the display driver to automatically increment the x (which is actually the row index) address after each write
-    call _lcd_busy_quick                ; Delay before writing to the lcd driver (required by the hardware)
-    out (lcdinstport), a
-
-    ld a, 11                            ; set the starting column address (hl += 11)
-    add a, l
-    ld l, a
-    jr NC, +_
-    inc h
-_:  ld (_current_column_addr), hl
-_loop_row:
-    ld a, d                             ; Set the target address of the lcd driver
-    call _lcd_busy_quick
-    out (lcdinstport), a
-
-    ld b, 64
-_loop_column:
-    ld a, (hl)
-    call _lcd_busy_quick
-    out (lcddataport), a                ; Output byte to the lcd Driver.
-    ld a, l                             ; increment hl by 12
-    add a, 12
-    ld l, a
-    ld a, h
-    adc a, 0
-    ld h, a
-    djnz _loop_column                   ; Repeat until one column (64 bytes) has been written
-
-    dec d                               ; Select the next column
-
-_current_column_addr .equ $ + 1
-    ld hl, 0                            ; decrement the column address
-    dec hl
-    ld (_current_column_addr), hl
-    dec c 
-    jp NZ, _loop_row                    ; Current column is copied, continue with next column
-
-    ei                                  ; Re-enable interrupts
     ret
 
 
@@ -188,6 +145,18 @@ _copy_to_scratch_mem_and_shift:
     ret
 
 
+advance_dither_mask:
+    ld a, (_global_dither_mask)
+    ld b, a
+    and %00000011
+    jr NZ, +_
+    scf
+_:  rr b
+    ld a, b
+    ld (_global_dither_mask), a
+    ret
+
+
 ; Draws a sprite to the display buffers using blitting.
 ; 
 ; The following addresses must be populated before each call to blit_graphic:
@@ -204,15 +173,18 @@ blit_graphic:
 #define next_row_diff temp_b2
 
 ; Part 1: Setup target addresses into the display buffer
+_global_dither_mask .equ $ + 1           ; Setup dither masks
+    ld a, %01001001
+    ld (_dither_mask_prev), a
+    and %00000011
+    jp NZ, +_
+    scf
+_:  ld a, (_global_dither_mask)
+    rr a
+    ld (_dither_mask), a
+
 graphic_y .equ $ + 1
     ld l, 0
-    bit $01, l                          ; Initialize dither mask
-    ld a, %01010101
-    jr NZ, +_
-    cpl
-_:  ld (_dither_mask), a
-    cpl
-    ld (_dither_mask_inv), a
     ld h, 0                             ; hl = 12 * graphic_y
     sla l
     sla l
@@ -304,7 +276,7 @@ _dither_mask .equ $ + 1
     ld (hl), a
     ld a, (de)
     cpl
-_dither_mask_inv .equ $ + 1
+_dither_mask_prev .equ $ + 1
     and 0
     ld (hl), a
     ld a, (de)
@@ -340,9 +312,14 @@ _:  ld (graphic_addr), hl
     add hl, bc
     ld (display_offset_2), hl
 
-    ld a, (_dither_mask)                ; Invert dither masks
-    ld (_dither_mask_inv), a
-    cpl
+    ld a, (_dither_mask)                ; Advance dither masks
+    ld (_dither_mask_prev), a
+    ld b, a
+    and 3
+    jp NZ, +_
+    scf
+_:  ld a, b
+    rr a
     ld (_dither_mask), a
 
     ld a, (graphic_h_temp)              ; Decrement loop counter
@@ -363,8 +340,3 @@ graphic_h:
     .db 0
 graphic_addr:
     .dw 0
-
-_graphics_scratch_mem_b0:
-    .fill 8
-_graphics_scratch_mem_b1:
-    .fill 8
