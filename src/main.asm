@@ -81,22 +81,19 @@ main_loop:
     ld (graphic_h), a
     call blit_graphic
 
+    call wait_for_next_frame
     call advance_dither_mask
+    call dither_and_copy_to_screen
 
     call wait_for_next_frame
-    ld hl, _display_mirror_1
-    call fastcopyb
-
-    call wait_for_next_frame
-    ld hl, _display_mirror_2
-    call fastcopyb
+    call advance_dither_mask
+    call dither_and_copy_to_screen
 
     ld a, (action_keys)
     bit key_mode, a
     jr NZ, exit
     jr main_loop
 exit:
-    im 1                                ; Set interrupt mode back to 1
     ret
 
 
@@ -121,7 +118,6 @@ _activate_keygroup_delay:
 
 
 scan_keyboard:
-    .echo $
     ld a, $ff                           ; Reset keyboard for good luck
     out (1), a
 
@@ -188,4 +184,4 @@ test_graphic:
     .db %01100000 ;0
     .db %01100110 ;1
 
-#include res/player.inc
+#include res/sprites/player.inc

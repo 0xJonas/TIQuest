@@ -17,12 +17,12 @@
 ;   When drawn using blit_graphic, sprites have a maximum width of 12 bytes (96 pixels).
 ;
 ; The gray color is created using dithering: For this, each draw call (e.g. blit_graphic)
-; renderes into two buffers (_display_mirror_1 and _display_mirror_2). These buffers take turns in
+; renderes into two buffers (_dither_buffer_1 and _dither_buffer_2). These buffers take turns in
 ; being drawn to the screen. The buffers are drawn at a rate of ~100Hz (~120Hz for TI-83+).
 ; When drawing a byte containing gray, the corresponding bits are ANDed
 ; with a dither mask. This mask is updated using the following sequence:
 ;
-;   _display_mirror_1 | _display_mirror_2
+;   _dither_buffer_1 | _dither_buffer_2
 ;            00100100 | 01001001
 ;            10010010 | 00100100
 ;            01001001 | 10010010
@@ -40,8 +40,8 @@
 ;   blit_graphic
 
 
-_display_mirror_1 .equ plotSScreen
-_display_mirror_2 .equ appBackUpScreen
+display_buffer_1 .equ plotSScreen
+display_buffer_2 .equ appBackUpScreen
 _ti_lcd_busy_quick .equ $000b
 
 
@@ -56,7 +56,7 @@ _lcd_busy_quick:
 
 ; Clears the display buffers by filling them with 0s.
 clear_display:
-    ld hl, _display_mirror_1
+    ld hl, display_buffer_1
     ld bc, 64 * 12 + 256 + 1            ; The screen is 64 * 12 bytes. However, because we branch when the registers are !0, we need to add 1 to b and c
 _:  ld (hl), 0
     inc hl
@@ -65,7 +65,7 @@ _:  ld (hl), 0
     dec b
     jp NZ, -_
 
-    ld hl, _display_mirror_2
+    ld hl, display_buffer_2
     ld bc, 64 * 12 + 256 + 1
 _:  ld (hl), 0
     inc hl
@@ -77,6 +77,144 @@ _:  ld (hl), 0
     ret
 
 
+; Advances the dithering masks used by dither_and_copy_to_screen.
+advance_dither_mask:
+    ld a, (_local_dither_mask_0)
+    ld b, a
+    and %00000011
+    jr NZ, +_
+    scf
+_:  rr b
+    ld a, b
+    ld (_local_dither_mask_0), a
+    ld (_local_dither_mask_3), a
+
+    ld a, (_local_dither_mask_1)
+    ld b, a
+    and %00000011
+    jr NZ, +_
+    scf
+_:  rr b
+    ld a, b
+    ld (_local_dither_mask_1), a
+
+    ld a, (_local_dither_mask_2)
+    ld b, a
+    and %00000011
+    jr NZ, +_
+    scf
+_:  rr b
+    ld a, b
+    ld (_local_dither_mask_2), a
+    ret
+
+
+; Dithers the current contents of the display buffers and sends them to
+; the LCD.
+dither_and_copy_to_screen:
+    di                                  ; disable interrupts
+
+    ld a, $80                           ; Reset vertical address
+    call _lcd_busy_quick
+    out (lcdinstport), a
+
+    ld a, $20
+    ld (_lcd_column_selector), a        ; Setup command to set the lcd driver's column
+
+    ld c, 11                            ; C: column index
+    di                                  ; Disable interrupts
+
+    ld a, $05                           ; Set the display driver to automatically increment the x (which is actually the row index) address after each write
+    call _lcd_busy_quick                ; Delay before writing to the lcd driver (required by the hardware)
+    out (lcdinstport), a
+
+    ld hl, display_buffer_1
+    exx
+    ld hl, display_buffer_2
+    exx
+
+_loop_row:
+_lcd_column_selector .equ $ + 1
+    ld a, 0                             ; Set the target address of the lcd driver
+    call _lcd_busy_quick
+    out (lcdinstport), a
+
+    ld b, 64 / 3                        ; Unroll by a factor of 3
+
+_loop_column:
+    ; 1st copy
+    ld a, (hl)                          ; Load value from display buffer 1
+    inc hl                              ; Increment pointer
+    ld d, a
+    cpl
+_local_dither_mask_0 .equ $ + 1
+    and %01001001
+    or d
+    exx
+    and (hl)                            ; AND with value from display buffer 2
+    inc hl
+    exx
+
+    out (lcddataport), a                ; Output byte to the lcd Driver.
+
+    ; 2nd copy
+    ld a, (hl)                          ; Load value from display buffer 1
+    inc hl                              ; Increment pointer
+    ld d, a
+    cpl
+_local_dither_mask_1 .equ $ + 1
+    and %00100100
+    or d
+    exx
+    and (hl)                            ; AND with value from display buffer 2
+    inc hl
+    exx
+
+    out (lcddataport), a                ; Output byte to the lcd Driver.
+
+    ; 3rd copy
+    ld a, (hl)                          ; Load value from display buffer 1
+    inc hl                              ; Increment pointer
+    ld d, a
+    cpl
+_local_dither_mask_2 .equ $ + 1
+    and %10010010
+    or d
+    exx
+    and (hl)                            ; AND with value from display buffer 2
+    inc hl
+    exx
+
+    out (lcddataport), a                ; Output byte to the lcd Driver.
+
+    djnz _loop_column                   ; Repeat until one column (64 bytes) has been written
+
+    ; 4th copy (strip)
+    ld a, (hl)                          ; Load value from display buffer 1
+    inc hl                              ; Increment pointer
+    ld d, a
+    cpl
+_local_dither_mask_3 .equ $ + 1
+    and %01001001
+    or d
+    exx
+    and (hl)                            ; AND with value from display buffer 2
+    inc hl
+    exx
+
+    out (lcddataport), a                ; Output byte to the lcd Driver.
+
+    ld a, (_lcd_column_selector)        ; Select the next column
+    inc a
+    ld (_lcd_column_selector), a
+
+    dec c 
+    jp P, _loop_row                    ; Current column is copied, continue with next column
+
+    ei                                  ; Re-enable interrupts
+    ret
+
+
 ; Shifts a block of memory by some number of bits (<8)
 ;
 ; Parameters:
@@ -84,6 +222,10 @@ _:  ld (hl), 0
 ;   b = shift amount
 ;   c = memory length
 bitshift_memory:
+    ld a, b                             ; Exit early if shift amount is zero.
+    or b
+    jp Z, _bitshift_memory_exit
+
     ld a, c
     ld d, h
     ld e, l
@@ -98,6 +240,7 @@ _:  rr (hl)                             ; Rotate memory to the right in place
     dec c
     jr NZ, -_
     djnz _bitshift_mem_outer
+_bitshift_memory_exit:
     ret
 
 
@@ -145,18 +288,6 @@ _copy_to_scratch_mem_and_shift:
     ret
 
 
-advance_dither_mask:
-    ld a, (_global_dither_mask)
-    ld b, a
-    and %00000011
-    jr NZ, +_
-    scf
-_:  rr b
-    ld a, b
-    ld (_global_dither_mask), a
-    ret
-
-
 ; Draws a sprite to the display buffers using blitting.
 ; 
 ; The following addresses must be populated before each call to blit_graphic:
@@ -170,57 +301,53 @@ blit_graphic:
 #define display_offset_1 temp_w1
 #define display_offset_2 temp_w2
 #define graphic_h_temp temp_b1
-#define next_row_diff temp_b2
+#define next_row_diff temp_w3
 
 ; Part 1: Setup target addresses into the display buffer
-_global_dither_mask .equ $ + 1           ; Setup dither masks
-    ld a, %01001001
-    ld (_dither_mask_prev), a
-    and %00000011
-    jp NZ, +_
-    scf
-_:  ld a, (_global_dither_mask)
-    rr a
-    ld (_dither_mask), a
-
-graphic_y .equ $ + 1
-    ld l, 0
-    ld h, 0                             ; hl = 12 * graphic_y
-    sla l
-    sla l
-    ld c, l
-    ld b, h
+graphic_x .equ $ + 1                    ; hl = (graphic_x // 8) * 64
+    ld a, 0
+    and %11111000
+    ld l, a
+    ld h, 0
     sla l
     rl h
-    add hl, bc
+    sla l
+    rl h
+    sla l
+    rl h
 
-graphic_x .equ $ + 1                    ; hl += graphic_x
-    ld a, 0
-    sra a
-    sra a
-    sra a
-    add a, l
+    ld a, l
+graphic_y .equ $ + 1                    ; hl += graphic_y
+    add a, 0
     ld l, a
-    jr NC, +_
-    inc h
-_:  ex de, hl
+    ld a, h
+    adc a, 0
+    ld h, a
+    ex de, hl
 
-    ld hl, _display_mirror_1            ; Create display offset for buffer 1
+    ld hl, display_buffer_1             ; Create display offset for buffer 1
     add hl, de
     ld (display_offset_1), hl
 
-    ld hl, _display_mirror_2            ; Create display offset for buffer 2
+    ld hl, display_buffer_2             ; Create display offset for buffer 2
     add hl, de
     ld (display_offset_2), hl
 
-    ld hl, graphic_w                    ; Calculate value to update the display offsets by when moving to the next row
-    ld a, 11                            ; 12 - (graphic_w + 1)
-    sub (hl)
-    ld (next_row_diff), a
+    ld a, (graphic_w)                   ; Calculate value to update the display offsets by when moving to the next row
+    neg
+    dec a                               ; 1 - 64 * (graphic_w + 1)
+    ld h, a
+    ld l, 0
+    sra h
+    rr l
+    sra h
+    rr l
+    inc hl
+    ld (next_row_diff), hl
 
-; Part 2: Mask display memory using the graphic's stencil
+; Part 2: Actual blitting
     ld a, (graphic_h)                   ; Store graphic height into a temporary because we will overwrite it, but also need 
-    ld (graphic_h_temp), a                     ; the original value later
+    ld (graphic_h_temp), a              ; the original value later
 
 _blit_row:
     ld hl, (graphic_addr)
@@ -233,7 +360,6 @@ _blit_row:
     ld c, a
     call _copy_to_scratch_mem_and_shift
 
-; Negate and AND with display buffer contents
     ld a, (graphic_w)                   ; b = length of data in scratch buffers
     ld b, a
     inc b
@@ -249,49 +375,45 @@ _blit_byte:
     ld a, (de)                          ; Create mask by OR-ing the two bitplanes and negating
     or c
     cpl
+    and (hl)                            ; Apply mask to current content of the display buffer    
+    ld (hl), a
 
-    and (hl)                            ; Apply mask to current content of the display buffer
-    ld (hl), a
-    ld a, (de)
-    cpl
-_dither_mask .equ $ + 1
-    and 0
-    ld (hl), a
-    ld a, (de)
+    ld a, (de)                          ; OR masked value with the first bitplane
     or (hl)
-    and c
-    ld (hl), a                          ; Write result back into the display buffer
-    inc hl                              ; Increment offset
-    ld (display_offset_1), hl
+    ld (hl), a                          ; Write ORed value back to the display buffer
+
+    ld a, 64                            ; Increment offset
+    add a, l
+    ld (display_offset_1), a
+    ld a, 0
+    adc a, h
+    ld (display_offset_1 + 1), a
 
     ; Second display buffer
     ld hl, (display_offset_2)
 
-    ld a, (de)
+    ld a, (de)                          ; Create mask by OR-ing the two bitplanes and negating
     or c
     cpl
-
     and (hl)                            ; Apply mask to current content of the display buffer
     ld (hl), a
-    ld (hl), a
-    ld a, (de)
-    cpl
-_dither_mask_prev .equ $ + 1
-    and 0
-    ld (hl), a
-    ld a, (de)
-    or (hl)
-    and c
-    ld (hl), a
 
-    inc hl
-    ld (display_offset_2), hl
+    ld a, c                             ; OR masked value with the first bitplane
+    or (hl)
+    ld (hl), a                          ; Write ORed value back to the display buffer
+
+    ld a, 64                            ; Increment offset
+    add a, l
+    ld (display_offset_2), a
+    ld a, 0
+    adc a, h
+    ld (display_offset_2 + 1), a
 
     inc ix
     inc de
     djnz _blit_byte
 
-    ld hl, (graphic_addr)               ; Setup address for the next iteration (graphic_addr += 2 * graphic_w)
+    ld hl, (graphic_addr)               ; Setup address for the next row (graphic_addr += 2 * graphic_w)
     ld a, (graphic_w)
     sla a
     add a, l
@@ -300,27 +422,16 @@ _dither_mask_prev .equ $ + 1
     inc hl
 _:  ld (graphic_addr), hl
 
-    ld a, (next_row_diff)               ; Load offset to the start of the next row
-    ld b, 0
-    ld c, a
+    ld hl, (next_row_diff)              ; Load display buffer offset to the start of the next row
+    ex de, hl
 
-    ld hl, (display_offset_1)           ; Update display_offset_1 to the next row 
-    add hl, bc
+    ld hl, (display_offset_1)           ; Update display_offset_1 by adding the offset to the next row
+    add hl, de
     ld (display_offset_1), hl
 
-    ld hl, (display_offset_2)           ; Update display_offset_1 to the next row 
-    add hl, bc
+    ld hl, (display_offset_2)           ; Update display_offset_2 by adding the offset to the next row
+    add hl, de
     ld (display_offset_2), hl
-
-    ld a, (_dither_mask)                ; Advance dither masks
-    ld (_dither_mask_prev), a
-    ld b, a
-    and 3
-    jp NZ, +_
-    scf
-_:  ld a, b
-    rr a
-    ld (_dither_mask), a
 
     ld a, (graphic_h_temp)              ; Decrement loop counter
     dec a
