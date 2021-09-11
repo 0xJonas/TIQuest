@@ -37,6 +37,7 @@
 ; Provided labels:
 ;   clear_display
 ;   advance_dither_mask
+;   dither_and_copy_to_screen
 ;   blit_graphic
 
 
@@ -298,10 +299,9 @@ _copy_to_scratch_mem_and_shift:
 ;   (graphic_addr) address of the sprite's graphic data
 blit_graphic:
 
-#define display_offset_1 temp_w1
-#define display_offset_2 temp_w2
-#define graphic_h_temp temp_b1
-#define next_row_diff temp_w3
+#define offset_to_next_row temp_w1
+#define graphic_h_temp     temp_b1
+#define current_x_pos      temp_b2
 
 ; Part 1: Setup target addresses into the display buffer
 graphic_x .equ $ + 1                    ; hl = (graphic_x // 8) * 64
@@ -309,7 +309,9 @@ graphic_x .equ $ + 1                    ; hl = (graphic_x // 8) * 64
     and %11111000
     ld l, a
     ld h, 0
-    sla l
+    jp P, +_                            ; Handle negative values
+    ld h, $ff
+_:  sla l
     rl h
     sla l
     rl h
@@ -323,7 +325,11 @@ graphic_y .equ $ + 1                    ; hl += graphic_y
     ld a, h
     adc a, 0
     ld h, a
-    ex de, hl
+    ld a, (graphic_y)                   ; Handle negative values
+    cp a, 0
+    jp P, +_
+    dec h
+_:  ex de, hl
 
     ld hl, display_buffer_1             ; Create display offset for buffer 1
     add hl, de
@@ -333,9 +339,9 @@ graphic_y .equ $ + 1                    ; hl += graphic_y
     add hl, de
     ld (display_offset_2), hl
 
-    ld a, (graphic_w)                   ; Calculate value to update the display offsets by when moving to the next row
-    neg
-    dec a                               ; 1 - 64 * (graphic_w + 1)
+    ld a, (graphic_w)                   ; Calculate amount to set the display offsets back by, when jumping back to the start of the row
+    neg                                 ; 1 - 64 * (graphic_w + 1)
+    dec a
     ld h, a
     ld l, 0
     sra h
@@ -343,19 +349,29 @@ graphic_y .equ $ + 1                    ; hl += graphic_y
     sra h
     rr l
     inc hl
-    ld (next_row_diff), hl
+    ld (offset_to_next_row), hl
 
 ; Part 2: Actual blitting
     ld a, (graphic_h)                   ; Store graphic height into a temporary because we will overwrite it, but also need 
     ld (graphic_h_temp), a              ; the original value later
 
 _blit_row:
-    ld hl, (graphic_addr)
+    ld a, (graphic_y)                   ; Do not render the row if it is off the top of the screen
+    cp 0
+    jp M, _skip_row
 
     ld a, (graphic_x)                   ; Load shift amount into b (graphic_x & 0b111)
+    ld c, a
     and %00000111
     ld b, a
 
+    ld a, c                             ; Set the starting x position for the row
+    sra a
+    sra a
+    sra a
+    ld (current_x_pos), a
+
+    ld hl, (graphic_addr)
     ld a, (graphic_w)                   ; load graphic width into c
     ld c, a
     call _copy_to_scratch_mem_and_shift
@@ -367,21 +383,41 @@ _blit_row:
     ld de, _graphics_scratch_mem_b0
     ld ix, _graphics_scratch_mem_b1
 _blit_byte:
-    ld c, (ix + 0)                      ; Save content of second bitplane
+    ld a, (current_x_pos)
+    inc a
+    ld (current_x_pos), a
+    cp 1                                ; Skip if byte is off the left of the screen
+    jp M, _setup_next_byte
+    cp 13                               ; Skip if byte if off the right of the screen
+    jp P, _setup_next_byte
 
-    ; First display buffer
-    ld hl, (display_offset_1)
+    ld c, (ix + 0)                      ; Save content of second bitplane
 
     ld a, (de)                          ; Create mask by OR-ing the two bitplanes and negating
     or c
     cpl
-    and (hl)                            ; Apply mask to current content of the display buffer    
+
+    push af
+display_offset_1 .equ $ + 1
+    ld hl, 0                            ; Apply mask to content of the first display buffer
+    and (hl)
     ld (hl), a
 
-    ld a, (de)                          ; OR masked value with the first bitplane
-    or (hl)
+    pop af
+display_offset_2 .equ $ + 1
+    ld hl, 0                            ; Apply mask to content of the second display buffer
+    and (hl)
+
+    or c                                ; OR masked value with the second bitplane
     ld (hl), a                          ; Write ORed value back to the display buffer
 
+    ld a, (de)
+    ld hl, (display_offset_1)
+    or (hl)                             ; OR masked value with the second bitplane
+    ld (hl), a                          ; Write ORed value back to the display buffer
+
+_setup_next_byte:
+    ld hl, (display_offset_1)
     ld a, 64                            ; Increment offset
     add a, l
     ld (display_offset_1), a
@@ -389,19 +425,7 @@ _blit_byte:
     adc a, h
     ld (display_offset_1 + 1), a
 
-    ; Second display buffer
     ld hl, (display_offset_2)
-
-    ld a, (de)                          ; Create mask by OR-ing the two bitplanes and negating
-    or c
-    cpl
-    and (hl)                            ; Apply mask to current content of the display buffer
-    ld (hl), a
-
-    ld a, c                             ; OR masked value with the first bitplane
-    or (hl)
-    ld (hl), a                          ; Write ORed value back to the display buffer
-
     ld a, 64                            ; Increment offset
     add a, l
     ld (display_offset_2), a
@@ -413,16 +437,7 @@ _blit_byte:
     inc de
     djnz _blit_byte
 
-    ld hl, (graphic_addr)               ; Setup address for the next row (graphic_addr += 2 * graphic_w)
-    ld a, (graphic_w)
-    sla a
-    add a, l
-    ld l, a
-    JR NC, +_
-    inc hl
-_:  ld (graphic_addr), hl
-
-    ld hl, (next_row_diff)              ; Load display buffer offset to the start of the next row
+    ld hl, (offset_to_next_row)   ; Load offset to set the display_offsets back to the start of the row
     ex de, hl
 
     ld hl, (display_offset_1)           ; Update display_offset_1 by adding the offset to the next row
@@ -433,11 +448,38 @@ _:  ld (graphic_addr), hl
     add hl, de
     ld (display_offset_2), hl
 
+    jp _setup_next_row
+
+_skip_row:
+    ld hl, (display_offset_1)           ; Move display offsets to the next row
+    inc hl
+    ld (display_offset_1), hl
+    ld hl, (display_offset_2)
+    inc hl
+    ld (display_offset_2), hl
+
+_setup_next_row:
+    ld hl, (graphic_addr)               ; Setup address for the next row (graphic_addr += 2 * graphic_w)
+    ld a, (graphic_w)
+    sla a
+    add a, l
+    ld l, a
+    JR NC, +_
+    inc hl
+_:  ld (graphic_addr), hl
+
+    ld a, (graphic_y)                   ; Exit if the next row would be off the bottom of the screen
+    inc a
+    cp 64
+    jp P, _exit_blit_graphic
+    ld (graphic_y), a
+
     ld a, (graphic_h_temp)              ; Decrement loop counter
     dec a
     ld (graphic_h_temp), a
     jp NZ, _blit_row
 
+_exit_blit_graphic:
     ret
 
 #undefine display_offset_1
