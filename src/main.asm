@@ -64,8 +64,12 @@ setup:
     res indicRun, (IY + indicFlags)     ; Disable the run indicator (random scrolling pixels in the top-right)
     set fullScrnDraw, (IY + apiFlg4)    ; Enable full screen
 
-    call setup_interrupts
+    ld a, 0
+    ld (frame_start_time), a
+    ld (sub_frame_counter), a
+
     call clear_display
+    call setup_interrupts
 main_loop:
     ; ld hl, player_walk_front_1
     ld hl, test_graphic
@@ -82,12 +86,6 @@ main_loop:
     call blit_graphic
 
     call wait_for_next_frame
-    call advance_dither_mask
-    call dither_and_copy_to_screen
-
-    call wait_for_next_frame
-    call advance_dither_mask
-    call dither_and_copy_to_screen
 
     ld a, (action_keys)
     bit key_mode, a
@@ -99,15 +97,19 @@ exit:
 
 ; Halts execution (enters low-power state) until the next frame should be drawn.
 wait_for_next_frame:
-    ei                                  ; The OS has some timer running which periodically generates an interrupt.
-_enter_halt:
-    halt                                ; Enter low-power state
+    .echo $
+    ld a, (sub_frame_counter)           ; Check how many subframes passed since the last full frame.
+frame_start_time .equ $ + 1
+    sub a, 0
+    cp a, 4
+    jp P, _start_next_frame
+    ei
+    halt                                ; Loop until at least 4 subframes have past since the start of the last full frame.
+    jr wait_for_next_frame
 
-    bit onInterrupt, (IY + onFlags)     ; Check if we woke up because the ON key was pressed
-    jr Z, _start_next_frame
-    res onInterrupt, (IY + onFlags)     ; Reset ON key interrupt flag
-    jr _enter_halt
 _start_next_frame:
+    ld a, (sub_frame_counter)
+    ld (frame_start_time), a
     ret
 
 
@@ -152,8 +154,21 @@ scan_keyboard:
     ret
 
 
+custom_isr:
+    call advance_dither_mask
+    call dither_and_copy_to_screen
+    call scan_keyboard
+
+sub_frame_counter .equ $ + 1
+    ld a, 0
+    inc a
+    ld (sub_frame_counter), a
+
+    ret
+
+
 setup_interrupts:
-    ld hl, scan_keyboard                ; Add custom isr
+    ld hl, custom_isr                   ; Add custom isr
     ld (custintaddr), hl
     ld a, %00101001
     call setupint

@@ -113,8 +113,6 @@ _:  rr b
 ; Dithers the current contents of the display buffers and sends them to
 ; the LCD.
 dither_and_copy_to_screen:
-    di                                  ; disable interrupts
-
     ld a, $80                           ; Reset vertical address
     call _lcd_busy_quick
     out (lcdinstport), a
@@ -122,7 +120,9 @@ dither_and_copy_to_screen:
     ld a, $20
     ld (_lcd_column_selector), a        ; Setup command to set the lcd driver's column
 
-    ld c, 11                            ; C: column index
+    ld a, 11
+    ld (_column_index), a
+
     di                                  ; Disable interrupts
 
     ld a, $05                           ; Set the display driver to automatically increment the x (which is actually the row index) address after each write
@@ -130,9 +130,7 @@ dither_and_copy_to_screen:
     out (lcdinstport), a
 
     ld hl, display_buffer_1
-    exx
-    ld hl, display_buffer_2
-    exx
+    ld de, display_buffer_2
 
 _loop_row:
 _lcd_column_selector .equ $ + 1
@@ -146,45 +144,45 @@ _loop_column:
     ; 1st copy
     ld a, (hl)                          ; Load value from display buffer 1
     inc hl                              ; Increment pointer
-    ld d, a
+    ld c, a
     cpl
 _local_dither_mask_0 .equ $ + 1
     and %01001001
-    or d
-    exx
+    or c
+    ex de, hl
     and (hl)                            ; AND with value from display buffer 2
     inc hl
-    exx
+    ex de, hl
 
     out (lcddataport), a                ; Output byte to the lcd Driver.
 
     ; 2nd copy
     ld a, (hl)                          ; Load value from display buffer 1
     inc hl                              ; Increment pointer
-    ld d, a
+    ld c, a
     cpl
 _local_dither_mask_1 .equ $ + 1
     and %00100100
-    or d
-    exx
+    or c
+    ex de, hl
     and (hl)                            ; AND with value from display buffer 2
     inc hl
-    exx
+    ex de, hl
 
     out (lcddataport), a                ; Output byte to the lcd Driver.
 
     ; 3rd copy
     ld a, (hl)                          ; Load value from display buffer 1
     inc hl                              ; Increment pointer
-    ld d, a
+    ld c, a
     cpl
 _local_dither_mask_2 .equ $ + 1
     and %10010010
-    or d
-    exx
+    or c
+    ex de, hl
     and (hl)                            ; AND with value from display buffer 2
     inc hl
-    exx
+    ex de, hl
 
     out (lcddataport), a                ; Output byte to the lcd Driver.
 
@@ -193,15 +191,15 @@ _local_dither_mask_2 .equ $ + 1
     ; 4th copy (strip)
     ld a, (hl)                          ; Load value from display buffer 1
     inc hl                              ; Increment pointer
-    ld d, a
+    ld c, a
     cpl
 _local_dither_mask_3 .equ $ + 1
     and %01001001
-    or d
-    exx
+    or c
+    ex de, hl
     and (hl)                            ; AND with value from display buffer 2
     inc hl
-    exx
+    ex de, hl
 
     out (lcddataport), a                ; Output byte to the lcd Driver.
 
@@ -209,10 +207,12 @@ _local_dither_mask_3 .equ $ + 1
     inc a
     ld (_lcd_column_selector), a
 
-    dec c 
+_column_index .equ $ + 1
+    ld a, 0
+    dec a
+    ld (_column_index), a
     jp P, _loop_row                    ; Current column is copied, continue with next column
 
-    ei                                  ; Re-enable interrupts
     ret
 
 
